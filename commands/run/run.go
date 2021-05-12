@@ -140,8 +140,8 @@ func Run() {
 			if info != nil && !info.IsDir() {
 				return nil
 			}
-			for _, p := range reloadIgnores {
-				if ignored, err := isIgnoreReload(p, path); ignored || err != nil {
+			for _, pattern := range reloadIgnores {
+				if isIgnoreReload(pattern, path) {
 					return filepath.SkipDir
 				}
 			}
@@ -167,6 +167,12 @@ func Run() {
 			// Variable <dirty> is used for running the changes only one in one second.
 			if !dirty.Cas(false, true) {
 				return
+			}
+			// Ignore file from configurations
+			for _, pattern := range reloadIgnores {
+				if isIgnoreReload(pattern, event.Path) {
+					return
+				}
 			}
 			// With some delay in case of multiple code changes in very short interval.
 			gtimer.SetTimeout(1500*gtime.MS, func() {
@@ -243,9 +249,9 @@ func (app *App) Run() {
 	}
 }
 
-func isIgnoreReload(pattern, path string) (bool, error) {
+func isIgnoreReload(pattern, path string) bool {
 	if pattern == "" {
-		return false, nil
+		return false
 	}
 
 	negatePattern := false
@@ -304,12 +310,13 @@ func isIgnoreReload(pattern, path string) (bool, error) {
 
 	reg, err := regexp.Compile(expr)
 	if err != nil {
-		return false, err
+		mlog.Print(err)
+		return false
 	}
 
 	matched := reg.MatchString(path)
 	if matched && !negatePattern {
-		return true, nil
+		return true
 	}
-	return false, nil
+	return false
 }

@@ -35,14 +35,11 @@ func Test_isIgnoreReload(t *testing.T) {
 		{"!b.txt", "dir/b.txt", false},
 		{"!/b.txt", "dir/b.txt", false},
 		{"/*.txt", "dir/b.txt", false},
+		{"*_test.go", "dir/a_test.go", true},
 	}
 
 	for _, item := range asserts {
-		ignore, err := isIgnoreReload(item.pattern, item.path)
-		if err != nil {
-			t.Error(err)
-		}
-		if ignore != item.ignore {
+		if isIgnoreReload(item.pattern, item.path) != item.ignore {
 			t.Errorf("Match fail: pattern=%s, path=%s", item.pattern, item.path)
 		}
 	}
