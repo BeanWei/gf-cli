@@ -2,6 +2,13 @@ package run
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strings"
+	"time"
+
 	"github.com/gogf/gf-cli/commands/swagger"
 	"github.com/gogf/gf-cli/library/mlog"
 	"github.com/gogf/gf/container/garray"
@@ -15,10 +22,6 @@ import (
 	"github.com/gogf/gf/os/gtime"
 	"github.com/gogf/gf/os/gtimer"
 	"github.com/gogf/gf/text/gstr"
-	"os"
-	"runtime"
-	"strings"
-	"time"
 )
 
 type App struct {
@@ -30,6 +33,7 @@ type App struct {
 
 const (
 	gPROXY_CHECK_TIMEOUT = time.Second
+	nodeNameInConfigFile = "gfcli.run" // nodeNameInConfigFile is the node name for compiler configurations in configuration file.
 )
 
 var (
@@ -125,27 +129,55 @@ func Run() {
 		app.Options = strings.Join(array.SubSlice(3), " ")
 	}
 	dirty := gtype.NewBool()
-	_, err = gfsnotify.Add(gfile.RealPath("."), func(event *gfsnotify.Event) {
-		if gfile.ExtName(event.Path) != "go" {
-			return
-		}
-		// Ignore swagger file.
-		if gfile.Basename(event.Path) == "data-swagger.go" {
-			return
-		}
-		// Variable <dirty> is used for running the changes only one in one second.
-		if !dirty.Cas(false, true) {
-			return
-		}
-		// With some delay in case of multiple code changes in very short interval.
-		gtimer.SetTimeout(1500*gtime.MS, func() {
-			defer dirty.Set(false)
-			mlog.Printf(`go file changes: %s`, event.String())
-			app.Run()
+	reloadIgnores := make([]string, 0)
+	watchDirs := make([]string, 0)
+	recursive := false
+	if g.Cfg().Available() {
+		reloadIgnores = g.Cfg().GetStrings(fmt.Sprintf("%s.%s", nodeNameInConfigFile, "reloadignore"))
+	}
+	if len(reloadIgnores) > 0 {
+		err = filepath.Walk(gfile.RealPath("."), func(path string, info os.FileInfo, err error) error {
+			if info != nil && !info.IsDir() {
+				return nil
+			}
+			for _, p := range reloadIgnores {
+				if ignored, err := isIgnoreReload(p, path); ignored || err != nil {
+					return filepath.SkipDir
+				}
+			}
+			watchDirs = append(watchDirs, path)
+			return nil
 		})
-	})
+	} else {
+		watchDirs = append(watchDirs, gfile.RealPath("."))
+		recursive = true
+	}
 	if err != nil {
 		mlog.Fatal(err)
+	}
+	for _, dir := range watchDirs {
+		_, err = gfsnotify.Add(dir, func(event *gfsnotify.Event) {
+			if gfile.ExtName(event.Path) != "go" {
+				return
+			}
+			// Ignore swagger file.
+			if gfile.Basename(event.Path) == "data-swagger.go" {
+				return
+			}
+			// Variable <dirty> is used for running the changes only one in one second.
+			if !dirty.Cas(false, true) {
+				return
+			}
+			// With some delay in case of multiple code changes in very short interval.
+			gtimer.SetTimeout(1500*gtime.MS, func() {
+				defer dirty.Set(false)
+				mlog.Printf(`go file changes: %s`, event.String())
+				app.Run()
+			})
+		}, recursive)
+		if err != nil {
+			mlog.Fatal(err)
+		}
 	}
 	go app.Run()
 	select {}
@@ -209,4 +241,75 @@ func (app *App) Run() {
 	} else {
 		mlog.Printf("build running pid: %d", pid)
 	}
+}
+
+func isIgnoreReload(pattern, path string) (bool, error) {
+	if pattern == "" {
+		return false, nil
+	}
+
+	negatePattern := false
+
+	// Handle [Rule 4] which negates the match for patterns leading with "!"
+	if pattern[0] == '!' {
+		negatePattern = true
+		pattern = pattern[1:]
+	}
+
+	// Handle [pattern 2, 4], when # or ! is escaped with a \
+	// Handle [pattern 4] once we tag negatePattern, strip the leading ! char
+	if regexp.MustCompile(`^(\#|\!)`).MatchString(pattern) {
+		pattern = pattern[1:]
+	}
+
+	// If we encounter a foo/*.blah in a folder, prepend the / char
+	if regexp.MustCompile(`([^\/+])/.*\*\.`).MatchString(pattern) && pattern[0] != '/' {
+		pattern = "/" + pattern
+	}
+
+	// Handle escaping the "." char
+	pattern = regexp.MustCompile(`\.`).ReplaceAllString(pattern, `\.`)
+
+	magicStar := "#$~"
+
+	// Handle "/**/" usage
+	if strings.HasPrefix(pattern, "/**/") {
+		pattern = pattern[1:]
+	}
+	pattern = regexp.MustCompile(`/\*\*/`).ReplaceAllString(pattern, `(/|/.+/)`)
+	pattern = regexp.MustCompile(`\*\*/`).ReplaceAllString(pattern, `(|.`+magicStar+`/)`)
+	pattern = regexp.MustCompile(`/\*\*`).ReplaceAllString(pattern, `(|/.`+magicStar+`)`)
+
+	// Handle escaping the "*" char
+	pattern = regexp.MustCompile(`\\\*`).ReplaceAllString(pattern, `\`+magicStar)
+	pattern = regexp.MustCompile(`\*`).ReplaceAllString(pattern, `([^/]*)`)
+
+	// Handle escaping the "?" char
+	pattern = strings.Replace(pattern, "?", `\?`, -1)
+
+	pattern = strings.Replace(pattern, magicStar, "*", -1)
+
+	// Temporary regex
+	var expr = ""
+	if strings.HasSuffix(pattern, "/") {
+		expr = pattern + "(|.*)$"
+	} else {
+		expr = pattern + "(|/.*)$"
+	}
+	if strings.HasPrefix(expr, "/") {
+		expr = "^(|/)" + expr[1:]
+	} else {
+		expr = "^(|.*/)" + expr
+	}
+
+	reg, err := regexp.Compile(expr)
+	if err != nil {
+		return false, err
+	}
+
+	matched := reg.MatchString(path)
+	if matched && !negatePattern {
+		return true, nil
+	}
+	return false, nil
 }
