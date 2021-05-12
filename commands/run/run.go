@@ -140,6 +140,10 @@ func Run() {
 			if info != nil && !info.IsDir() {
 				return nil
 			}
+			// skip hidden directories like .git, .idea, etc.
+			if strings.HasPrefix(filepath.Base(path), ".") {
+				return filepath.SkipDir
+			}
 			for _, pattern := range reloadIgnores {
 				if isIgnoreReload(pattern, path) {
 					return filepath.SkipDir
@@ -155,6 +159,9 @@ func Run() {
 	if err != nil {
 		mlog.Fatal(err)
 	}
+	mlog.Printf("%v", reloadIgnores)
+	mlog.Printf("%v", watchDirs)
+	mlog.Printf("%v", recursive)
 	for _, dir := range watchDirs {
 		_, err = gfsnotify.Add(dir, func(event *gfsnotify.Event) {
 			if gfile.ExtName(event.Path) != "go" {
@@ -169,11 +176,11 @@ func Run() {
 				return
 			}
 			// Ignore file from configurations
-			for _, pattern := range reloadIgnores {
-				if isIgnoreReload(pattern, event.Path) {
-					return
-				}
-			}
+			// for _, pattern := range reloadIgnores {
+			// 	if isIgnoreReload(pattern, event.Path) {
+			// 		return
+			// 	}
+			// }
 			// With some delay in case of multiple code changes in very short interval.
 			gtimer.SetTimeout(1500*gtime.MS, func() {
 				defer dirty.Set(false)
